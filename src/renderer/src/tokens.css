@@ -1,0 +1,53 @@
+/* Design token di Intorno (identità Crowd Plus). Tutto l'aspetto si cambia da qui. */
+:root {
+  --font-sans: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  /* Brand Crowd Plus */
+  --brand-teal: #16f8dc;
+  --brand-green: #00f260;
+  --brand-red: #ff0000; /* il "+" del logo */
+  --brand-ink: #070707;
+  --brand-deep: #080f11;
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+
+  --shadow-soft: 0 6px 24px rgba(0, 0, 0, 0.18);
+  --shadow-bubble: 0 8px 28px rgba(0, 0, 0, 0.35);
+
+  --bubble-s: 96px;
+  --bubble-m: 132px;
+  --bubble-l: 184px;
+  --bubble-gap: 14px;
+
+  /* Tema chiaro (default) */
+  --bg: #f3f7f7;
+  --bg-elev: #ffffff;
+  --bg-hover: #e8efef;
+  --ink: #070707;
+  --ink-soft: #5b6a6c;
+  --line: #dbe4e4;
+  --accent: #16f8dc;
+  --accent-ink: #052a26; /* testo su sfondo accent */
+  --accent-text: #079a89; /* accent leggibile su chiaro */
+  --danger: #e5484d;
+  --ring: #16f8dc;
+  --glass: rgba(255, 255, 255, 0.82);
+  --logo-filter: invert(1) hue-rotate(180deg); /* il logo è bianco: sul chiaro lo rendiamo nero, il rosso resta rosso */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #080f11;
+    --bg-elev: #111b1d;
+    --bg-hover: #182427;
+    --ink: #f2f7f7;
+    --ink-soft: #8fa2a5;
+    --line: #1f2f32;
+    --accent-text: #16f8dc;
+    --glass: rgba(14, 24, 26, 0.82);
+    --logo-filter: none;
+  }
+}

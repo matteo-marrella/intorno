@@ -1,0 +1,53 @@
+appId: it.crowdplus.intorno
+productName: Intorno
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+win:
+  executableName: Intorno
+  signAndEditExecutable: false # niente firma: così si compila da Mac senza Wine
+  target:
+    - target: nsis
+      arch: x64
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+mac:
+  target:
+    - target: dmg
+      arch: universal
+  extendInfo:
+    CFBundleURLTypes:
+      - CFBundleURLName: Intorno
+        CFBundleURLSchemes:
+          - intorno
+    NSCameraUsageDescription: Intorno usa la camera per mostrare il tuo viso nelle bolle.
+    NSMicrophoneUsageDescription: Intorno usa il microfono per parlare con il team.
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+dmg:
+  artifactName: ${name}-${version}-mac.${ext}
+linux:
+  target:
+    - AppImage
+    - snap
+    - deb
+  maintainer: electronjs.org
+  category: Utility
+appImage:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false
+publish:
+  provider: github
+  owner: matteo-marrella
+  repo: intorno
