@@ -46,6 +46,7 @@ const api = {
     onLayout: (cb: (l: { flip: boolean; dx: number }) => void) =>
       on<{ flip: boolean; dx: number }>('bubbles:layout', cb),
     dragEnd: (): void => ipcRenderer.send('bubbles:drag-end'),
+    dock: (on: boolean): void => ipcRenderer.send('bubbles:dock', on),
     setVisible: (v: boolean): void => ipcRenderer.send('bubbles:visible', v),
     ignoreMouse: (ignore: boolean): void => ipcRenderer.send('bubbles:ignore-mouse', ignore),
     onMuteShortcut: (cb: () => void) => on<void>('shortcut:mute', cb)
@@ -56,6 +57,8 @@ const api = {
     sources: (): Promise<ShareSource[] | null> => ipcRenderer.invoke('share:sources'),
     choose: (id: string): void => ipcRenderer.send('share:choose', id),
     cancel: (): void => ipcRenderer.send('share:cancel'),
+    started: (): void => ipcRenderer.send('share:started'),
+    stopped: (): void => ipcRenderer.send('share:stopped'),
     onChosen: (cb: () => void) => on<void>('share:chosen', cb),
     onClose: (cb: () => void) => on<void>('picker:close', cb)
   },

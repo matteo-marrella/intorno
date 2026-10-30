@@ -1,14 +1,14 @@
 import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
 
-const OUT = 480 // lato del video inviato (quadrato: serve solo per un cerchio)
+const OUT = 640 // lato del video inviato (quadrato: serve solo per un cerchio)
 const FPS = 30
 const DETECT_EVERY = 2 // frame
-const HEAD_ROOM = 1.9 // lato del ritaglio = viso × questo valore (più basso = più zoom)
-const MIN_CROP = 0.2 // ritaglio minimo, in frazione del lato corto della camera
+const HEAD_ROOM = 3.0 // inquadratura larga (testa e spalle): le bolle zoomano un po' di più, Campfire resta largo
+const MIN_CROP = 0.3 // ritaglio minimo, in frazione del lato corto della camera
 const LOST_AFTER_MS = 1500
 const TAU_S = 0.28 // costante di tempo dell'inseguimento (più alto = più morbido)
 const DEAD_ZONE = 0.05 // oscillazioni sotto il 5% del ritaglio vengono ignorate
-const FACE_Y_OFFSET = -0.08 // 0 = viso al centro; negativo = viso più in basso, positivo = più in alto
+const FACE_Y_OFFSET = -0.2 // 0 = viso al centro; negativo = viso più in basso
 
 let detectorPromise: Promise<FaceDetector | null> | null = null
 function loadDetector(): Promise<FaceDetector | null> {

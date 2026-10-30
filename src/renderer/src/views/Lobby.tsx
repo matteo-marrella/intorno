@@ -292,7 +292,7 @@ function Rooms({ me }: { me: Me }): React.JSX.Element {
             Dimensione bolle
             <div className="seg">
               {(['S', 'M', 'L'] as const).map((s) => (
-                <button key={s} className={prefs.size === s ? 'on' : ''} onClick={() => setPrefs({ size: s })}>
+                <button key={s} className={prefs.size === s ? 'on' : ''} onClick={() => setPrefs({ size: s, px: undefined })}>
                   {s}
                 </button>
               ))}

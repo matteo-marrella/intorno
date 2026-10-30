@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  AudioLines,
   Eye,
   EyeOff,
   Hand,
   LayoutGrid,
   MessageCircle,
+  MoreHorizontal,
+  Smile,
   Mic,
   MicOff,
   PhoneOff,
@@ -25,6 +28,7 @@ import { BUBBLE_PX, usePrefs } from '../lib/prefs'
 import { MeshCall, type PeerInfo } from '../lib/mesh'
 import { blip, watchLevel } from '../lib/audio'
 import { VideoPipeline, type VideoFilter } from '../lib/pipeline'
+import { VoiceIsolator } from '../lib/voice'
 import { useChildWindow } from '../lib/childWindow'
 import { Campfire } from './Campfire'
 
@@ -46,8 +50,15 @@ interface ChatMsg {
   at: number
 }
 
-type Panel = 'fx' | 'chat' | null
-const norm = (s: string | null | undefined): string => (s ?? '').trim().toLowerCase()
+type Panel = 'react' | 'fx' | 'chat' | 'more' | null
+// Altezza riservata a barra + riquadri (in sync con RESERVED nel processo principale)
+const RESERVED = 314
+/** Diametro massimo perché tutte le bolle stiano nello schermo (da soli: quasi tutta l'altezza). */
+function fitMax(n: number): number {
+  const w = window.screen.availWidth
+  const h = window.screen.availHeight
+  return Math.max(64, Math.floor(Math.min((w - 60) / Math.max(1, n) - 36, h - RESERVED - 70)))
+}
 
 export default function Bubbles(): React.JSX.Element {
   const q = useMemo(() => new URLSearchParams(location.hash.split('?')[1]), [])
@@ -57,10 +68,16 @@ export default function Bubbles(): React.JSX.Element {
   // Id di sessione: la stessa persona può entrare da due computer senza sovrapporsi
   const instance = useRef(Math.random().toString(36).slice(2, 8))
   const selfId = me ? `${me.id}:${instance.current}` : ''
-  const [prefs] = usePrefs()
-  const px = BUBBLE_PX[prefs.size]
+  const [prefs, setPrefs] = usePrefs()
 
   const [peers, setPeers] = useState<PeerInfo[]>([])
+  const maxPx = fitMax(peers.length)
+  const px = Math.min(Math.max(prefs.px ?? BUBBLE_PX[prefs.size], 64), maxPx)
+  const pxRef = useRef(px)
+  pxRef.current = px
+  const setPx = (v: number): void => setPrefs({ px: Math.round(Math.min(Math.max(v, 64), fitMax(peers.length))) })
+  const setPxRef = useRef(setPx)
+  setPxRef.current = setPx
   // peer → (id stream → stream): la camera e l'eventuale schermo condiviso arrivano come stream distinti
   const [streams, setStreams] = useState<Record<string, Record<string, MediaStream>>>({})
   const [myShare, setMyShare] = useState<string | null>(null)
@@ -70,7 +87,8 @@ export default function Bubbles(): React.JSX.Element {
   const mutedRef = useRef(false)
   const [camOff, setCamOff] = useState(false)
   const [hand, setHand] = useState(false)
-  const [place, setPlace] = useState('')
+  const [isolation, setIsolation] = useState(true) // isolamento della voce
+  const isoRef = useRef<VoiceIsolator | null>(null)
   const [hideSelf, setHideSelf] = useState(false)
   const [campfire, setCampfire] = useState(false)
   const [error, setError] = useState('')
@@ -92,7 +110,6 @@ export default function Bubbles(): React.JSX.Element {
   const call = useRef<MeshCall | null>(null)
   const root = useRef<HTMLDivElement>(null)
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const levels = useRef<Record<string, number>>({})
 
   mutedRef.current = muted
 
@@ -103,6 +120,7 @@ export default function Bubbles(): React.JSX.Element {
     let stream: MediaStream | null = null
     let mesh: MeshCall | null = null
     let pipeline: VideoPipeline | null = null
+    let iso: VoiceIsolator | null = null
     ;(async () => {
       const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       try {
@@ -125,8 +143,15 @@ export default function Bubbles(): React.JSX.Element {
       // Audio originale + video ritagliato sul viso (canvas) = ciò che vedono gli altri.
       const camTrack = stream.getVideoTracks()[0]
       if (camTrack) pipeline = pipelineRef.current = new VideoPipeline(camTrack)
+      // Voce isolata (rete neurale in locale): via rumore di fondo e suoni del computer
+      const mic = stream.getAudioTracks()[0]
+      if (mic) iso = isoRef.current = await VoiceIsolator.create(mic)
+      if (cancelled) {
+        iso?.stop()
+        return stream.getTracks().forEach((t) => t.stop())
+      }
       const outgoing = new MediaStream([
-        ...stream.getAudioTracks(),
+        ...(iso ? [iso.track] : stream.getAudioTracks()),
         ...(pipeline ? [pipeline.track] : [])
       ])
       setLocal(outgoing)
@@ -140,8 +165,7 @@ export default function Bubbles(): React.JSX.Element {
           camOff: !pipeline,
           sharing: null,
           sharingAt: null,
-          hand: false,
-          place: null
+          hand: false
         },
         outgoing,
         iceServers(),
@@ -157,7 +181,6 @@ export default function Bubbles(): React.JSX.Element {
               const { [id]: _drop, ...rest } = c
               return rest
             })
-            delete levels.current[id]
           },
           onJoin: () => blip('join'),
           onLeave: () => blip('leave'),
@@ -184,6 +207,8 @@ export default function Bubbles(): React.JSX.Element {
       mesh?.leave()
       pipeline?.stop()
       pipelineRef.current = null
+      iso?.stop()
+      isoRef.current = null
       stream?.getTracks().forEach((t) => t.stop())
       call.current = null
     }
@@ -210,16 +235,13 @@ export default function Bubbles(): React.JSX.Element {
     setCamOff(next)
     call.current?.updateMe({ camOff: next })
   }
+  useEffect(() => isoRef.current?.setEnabled(isolation), [isolation, local])
   const toggleHand = useCallback(() => {
     setHand((h) => {
       call.current?.updateMe({ hand: !h })
       return !h
     })
   }, [])
-  const changePlace = (v: string): void => {
-    setPlace(v)
-    call.current?.updateMe({ place: v.trim() ? v.trim() : null })
-  }
   useEffect(() => window.api.bubbles.onMuteShortcut(toggleMute), [toggleMute])
   // Tasto H = mano alzata (come in Around)
   useEffect(() => {
@@ -238,57 +260,10 @@ export default function Bubbles(): React.JSX.Element {
     window.api.call.leave()
   }
 
-  // --- "Stessa stanza" (EchoTerminator): chi è nello stesso luogo non si sente via rete e
-  // resta aperto solo il microfono di chi parla in quel momento.
-  const myPlace = norm(place)
-  const mates = useMemo(
-    () => (myPlace ? peers.filter((p) => p.id !== selfId && norm(p.place) === myPlace) : []),
-    [peers, myPlace, selfId]
-  )
-  const isMate = (p: PeerInfo): boolean => mates.some((m) => m.id === p.id)
-
-  // Livello del mio microfono, misurato su una copia: la traccia inviata può essere chiusa dal gate
-  useEffect(() => {
-    const track = local?.getAudioTracks()[0]
-    if (!track || !selfId) return
-    const probe = track.clone()
-    probe.enabled = true
-    const stop = watchLevel(new MediaStream([probe]), (l) => (levels.current[selfId] = mutedRef.current ? 0 : l))
-    return () => {
-      stop()
-      probe.stop()
-    }
-  }, [local, selfId])
-
-  const speaker = useRef<{ id: string; since: number } | null>(null)
-  useEffect(() => {
-    const track = local?.getAudioTracks()[0]
-    if (!track) return
-    if (!mates.length) {
-      speaker.current = null
-      track.enabled = !mutedRef.current
-      return
-    }
-    const ids = [selfId, ...mates.map((m) => m.id)]
-    const iv = setInterval(() => {
-      const now = performance.now()
-      const lvl = (id: string): number => levels.current[id] ?? 0
-      const top = ids.reduce((a, b) => (lvl(b) > lvl(a) ? b : a), ids[0])
-      const cur = speaker.current
-      if (!cur || !ids.includes(cur.id)) speaker.current = { id: top, since: now }
-      else if (top !== cur.id && lvl(top) > Math.max(0.1, lvl(cur.id) * 1.4) && now - cur.since > 600)
-        speaker.current = { id: top, since: now }
-      track.enabled = !mutedRef.current && speaker.current!.id === selfId
-    }, 100)
-    return () => {
-      clearInterval(iv)
-      track.enabled = !mutedRef.current
-    }
-  }, [local, mates, selfId])
-
   // --- Condivisione schermo: chi inizia dopo prende il posto di chi condivideva (come Around)
   const stopShare = useCallback(() => {
     call.current?.stopShare()
+    window.api.share.stopped()
     setMyShare(null)
   }, [])
   const toggleShare = (): void => {
@@ -306,6 +281,7 @@ export default function Bubbles(): React.JSX.Element {
           stream.getVideoTracks().forEach((t) => ((t as MediaStreamTrack & { contentHint: string }).contentHint = 'detail'))
           stream.getVideoTracks()[0].addEventListener('ended', stopShare)
           call.current?.startShare(stream)
+          window.api.share.started() // cornice rossa attorno a ciò che condividi
           setMyShare(stream.id)
         } catch (e) {
           setNotice(`Condivisione non riuscita (${(e as DOMException).name}). Controlla il permesso Registrazione schermo.`)
@@ -364,6 +340,12 @@ export default function Bubbles(): React.JSX.Element {
     }
   }, [shareStream, sharer, openShareWindow])
   useEffect(() => () => shareWin.current?.close(), [])
+
+  // Durante una condivisione (mia o di altri) le bolle vanno in alto a destra e poi tornano
+  const anyShare = !!myShare || !!sharer
+  useEffect(() => {
+    window.api.bubbles.dock(anyShare)
+  }, [anyShare])
 
   // --- Campfire: vista a griglia in una finestra normale
   const campWin = useChildWindow(campfire, 'intorno-campfire', 'width=920,height=640', `Intorno · ${roomName}`, () =>
@@ -435,6 +417,31 @@ export default function Bubbles(): React.JSX.Element {
       const { [id]: _drop, ...rest } = c
       return rest
     })
+  }
+
+  // --- Ridimensionare le bolle: rotella/pizzico sopra le bolle, oppure la maniglia che compare in hover
+  useEffect(() => {
+    const el = stripRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      setPxRef.current(pxRef.current - e.deltaY * (e.ctrlKey ? 2.2 : 0.7))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+  const gripStart = useRef<{ x: number; px: number } | null>(null)
+  const onGripDown = (e: React.PointerEvent): void => {
+    e.stopPropagation()
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    gripStart.current = { x: e.screenX + e.screenY, px }
+  }
+  const onGripMove = (e: React.PointerEvent): void => {
+    const g = gripStart.current
+    if (g) setPx(g.px + (e.screenX + e.screenY - g.x) / 2)
+  }
+  const onGripUp = (): void => {
+    gripStart.current = null
   }
 
   // --- Dimensione finestra = contenuto
@@ -543,8 +550,7 @@ export default function Bubbles(): React.JSX.Element {
         camOff,
         sharing: myShare,
         sharingAt: null,
-        hand,
-        place: place.trim() || null
+        hand
       }
     : null
   const remote = peers.filter((p) => p.id !== selfId)
@@ -586,17 +592,22 @@ export default function Bubbles(): React.JSX.Element {
             info={p}
             isSelf={p.id === selfId}
             stream={camStream(p)}
-            silenced={isMate(p)}
             sharing={!!p.sharing}
             onOpenShare={p.id === selfId ? stopShare : openShareWindow}
             volume={volumes[p.id] ?? 1}
             reactions={floating.filter((f) => f.from === p.id)}
             chat={chats[p.id]}
             onDismissChat={() => dismissChat(p.id)}
-            onLevel={(l) => (levels.current[p.id] = l)}
             onContext={() => setMenuFor(p.id)}
           />
         ))}
+        <button
+          className="grip"
+          title="Trascina o usa la rotella per ridimensionare"
+          onPointerDown={onGripDown}
+          onPointerMove={onGripMove}
+          onPointerUp={onGripUp}
+        />
       </div>
 
       {!prefs.compact && (
@@ -638,42 +649,74 @@ export default function Bubbles(): React.JSX.Element {
                 </button>
               </div>
             ) : (
-              <div className="bar two" data-hit onMouseEnter={enter} onMouseLeave={leave}>
+              <div className="bar pro" data-hit onMouseEnter={enter} onMouseLeave={leave}>
                 <span className="bar-title">{roomName}</span>
-                {/* Gruppo base: camera, microfono, schermo */}
-                <div className="bar-row">
-                  <button className={`ctl ${camOff ? 'off' : ''}`} onClick={toggleCam} title="Camera">
-                    {camOff ? <VideoOff size={18} /> : <Video size={18} />}
+                {/* Le funzioni principali: tutte uguali e grandi. Filtri e Campfire stanno qui in alto. */}
+                <div
+                  className="bar-main"
+                  onMouseOver={(e) => {
+                    const onFx = !!(e.target as HTMLElement).closest('[data-fx]')
+                    setPanel((p) => (onFx ? 'fx' : p === 'react' || p === 'fx' ? null : p))
+                  }}
+                >
+                  <button className={`ctl big ${muted ? 'off' : ''}`} onClick={toggleMute} title="Microfono (⌘⇧M)">
+                    {muted ? <MicOff size={22} /> : <Mic size={22} />}
                   </button>
-                  <button className={`ctl ${muted ? 'off' : ''}`} onClick={toggleMute} title="Microfono (⌘⇧M)">
-                    {muted ? <MicOff size={18} /> : <Mic size={18} />}
+                  <button className={`ctl big ${camOff ? 'off' : ''}`} onClick={toggleCam} title="Camera">
+                    {camOff ? <VideoOff size={22} /> : <Video size={22} />}
                   </button>
                   <button
-                    className={`ctl ${myShare ? 'on' : ''}`}
+                    className={`ctl big ${myShare ? 'on' : ''}`}
                     onClick={toggleShare}
                     title={myShare ? 'Interrompi condivisione' : 'Condividi schermo'}
                   >
-                    {myShare ? <ScreenShareOff size={18} /> : <ScreenShare size={18} />}
+                    {myShare ? <ScreenShareOff size={22} /> : <ScreenShare size={22} />}
+                  </button>
+                  <button
+                    data-fx
+                    className={`ctl big ${panel === 'fx' || filter !== 'none' ? 'on' : ''}`}
+                    onClick={() => setPanel((p) => (p === 'fx' ? null : 'fx'))}
+                    title="Effetti e filtri"
+                  >
+                    <Sparkles size={22} />
+                  </button>
+                  <button
+                    className={`ctl big ${campfire ? 'on' : ''}`}
+                    onClick={() => setCampfire((c) => !c)}
+                    title={campfire ? 'Torna alle bolle' : 'Vista Campfire'}
+                  >
+                    <LayoutGrid size={22} />
                   </button>
                 </div>
-                {/* Effetti, chat e uscita */}
-                <div className="bar-row">
+                {/* Il resto: piccolo. Le reazioni si aprono passandoci sopra */}
+                <div className="bar-sub">
                   <button
-                    className={`ctl wide ${panel === 'fx' || filter !== 'none' ? 'on' : ''}`}
-                    onClick={() => setPanel((p) => (p === 'fx' ? null : 'fx'))}
-                    title="Reazioni, filtri e altro"
+                    className={`ctl sm ${panel === 'react' ? 'on' : ''}`}
+                    onMouseEnter={() => setPanel('react')}
+                    onClick={() => setPanel((p) => (p === 'react' ? null : 'react'))}
+                    title="Reazioni"
                   >
-                    <Sparkles size={16} /> Effetti
+                    <Smile size={16} />
                   </button>
                   <button
-                    className={`ctl ${panel === 'chat' ? 'on' : ''}`}
+                    className={`ctl sm ${panel === 'chat' ? 'on' : ''}`}
+                    onMouseEnter={() => setPanel((p) => (p === 'react' ? null : p))}
                     onClick={() => setPanel((p) => (p === 'chat' ? null : 'chat'))}
                     title="Chat"
                   >
-                    <MessageCircle size={18} />
+                    <MessageCircle size={16} />
                   </button>
-                  <button className="ctl wide leave" onClick={leaveCall} title="Esci dalla stanza">
-                    <PhoneOff size={16} /> Esci
+                  <button
+                    className={`ctl sm ${panel === 'more' ? 'on' : ''}`}
+                    onMouseEnter={() => setPanel((p) => (p === 'react' ? null : p))}
+                    onClick={() => setPanel((p) => (p === 'more' ? null : 'more'))}
+                    title="Altro"
+                  >
+                    <MoreHorizontal size={16} />
+                  </button>
+                  <span className="sep" />
+                  <button className="ctl sm leave" onClick={leaveCall} title="Esci dalla stanza">
+                    <PhoneOff size={16} />
                   </button>
                 </div>
               </div>
@@ -682,22 +725,23 @@ export default function Bubbles(): React.JSX.Element {
 
           {/* Spazio riservato ai riquadri: sotto la barra, o sopra se la barra è ribaltata. */}
           <div className={`tray ${panel ? 'show' : ''}`}>
+            {panel === 'react' && (
+              <div className="fx-pop" data-hit onMouseEnter={enter} onMouseLeave={leave}>
+                <div className="emoji-row">
+                  {EMOJI.map((e) => (
+                    <button key={e} className={e.length > 2 && /^\w/.test(e) ? 'txt' : ''} onClick={() => react(e)}>
+                      {e}
+                    </button>
+                  ))}
+                  <button onClick={calm}>{CALM_EMOJI}</button>
+                  <button className={hand ? 'sel' : ''} onClick={toggleHand} title="Mano alzata (H)">
+                    <Hand size={20} />
+                  </button>
+                </div>
+              </div>
+            )}
             {panel === 'fx' && (
               <div className="fx-pop" data-hit onMouseEnter={enter} onMouseLeave={leave}>
-                <div className="fx-section">
-                  <small>Reazioni</small>
-                  <div className="emoji-row">
-                    {EMOJI.map((e) => (
-                      <button key={e} className={e.length > 2 && /^\w/.test(e) ? 'txt' : ''} onClick={() => react(e)}>
-                        {e}
-                      </button>
-                    ))}
-                    <button onClick={calm}>{CALM_EMOJI}</button>
-                    <button className={hand ? 'sel' : ''} onClick={toggleHand} title="Mano alzata (H)">
-                      <Hand size={20} />
-                    </button>
-                  </div>
-                </div>
                 <div className="fx-section">
                   <small>Scegli tra i numerosi filtri</small>
                   <div className="chips">
@@ -709,20 +753,23 @@ export default function Bubbles(): React.JSX.Element {
                     </button>
                   </div>
                 </div>
-                <div className="fx-section">
-                  <small>Nello stesso posto? Scrivete lo stesso nome</small>
-                  <div className="chips">
-                    <input
-                      className="field mini"
-                      value={place}
-                      maxLength={30}
-                      placeholder="Es. Ufficio"
-                      onChange={(e) => changePlace(e.target.value)}
-                    />
-                    <button onClick={() => setCampfire((c) => !c)} title="Vista a griglia in una finestra">
-                      <LayoutGrid size={13} /> {campfire ? 'Bolle' : 'Campfire'}
-                    </button>
-                  </div>
+              </div>
+            )}
+            {panel === 'more' && (
+              <div className="fx-pop" data-hit onMouseEnter={enter} onMouseLeave={leave}>
+                <div className="chips">
+                  <button
+                    className={isolation ? 'sel' : ''}
+                    onClick={() => setIsolation((v) => !v)}
+                    title="Toglie rumore di fondo e suoni del computer dal tuo microfono"
+                  >
+                    <AudioLines size={13} /> Isolamento voce
+                  </button>
+                </div>
+                <div className="chips">
+                  <button disabled={remote.length === 0} onClick={() => setHideSelf((h) => !h)}>
+                    {hideSelf ? <Eye size={13} /> : <EyeOff size={13} />} {hideSelf ? 'Mostra me' : 'Nascondi me'}
+                  </button>
                 </div>
               </div>
             )}
@@ -761,7 +808,6 @@ export default function Bubbles(): React.JSX.Element {
             people={everyone}
             selfId={selfId}
             streamOf={camStream}
-            silenced={isMate}
             volumes={volumes}
             muted={muted}
             camOff={camOff}
@@ -782,27 +828,23 @@ function Bubble({
   info,
   isSelf,
   stream,
-  silenced,
   volume,
   reactions,
   sharing,
   onOpenShare,
   chat,
   onDismissChat,
-  onLevel,
   onContext
 }: {
   info: PeerInfo
   isSelf: boolean
   stream: MediaStream | null | undefined
-  silenced: boolean
   volume: number
   reactions: Floating[]
   sharing: boolean
   onOpenShare?: () => void
   chat?: ChatMsg
   onDismissChat: () => void
-  onLevel: (l: number) => void
   onContext: () => void
 }): React.JSX.Element {
   const video = useRef<HTMLVideoElement>(null)
@@ -815,22 +857,13 @@ function Bubble({
     if (video.current) video.current.volume = volume
   }, [volume])
 
-  // Anello della voce (e livello per il gate di "Stessa stanza")
+  // Anello della voce
   useEffect(() => {
     if (!stream || info.muted) {
       ring.current?.style.setProperty('--level', '0')
-      onLevel(0)
       return
     }
-    const stop = watchLevel(stream, (l) => {
-      ring.current?.style.setProperty('--level', String(l))
-      if (!isSelf) onLevel(l)
-    })
-    return () => {
-      stop()
-      if (!isSelf) onLevel(0)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return watchLevel(stream, (l) => ring.current?.style.setProperty('--level', String(l)))
   }, [stream, info.muted])
 
   const showVideo = stream && stream.getVideoTracks().length > 0 && !info.camOff
@@ -842,27 +875,28 @@ function Bubble({
             ref={video}
             autoPlay
             playsInline
-            muted={isSelf || silenced}
+            muted={isSelf}
             className={isSelf ? 'mirror' : ''}
             style={{ opacity: showVideo ? 1 : 0 }}
           />
           {!showVideo && <span className="initial">{info.name.slice(0, 1).toUpperCase()}</span>}
-          {sharing && (
-            <button
-              className={`badge share ${isSelf ? 'live' : ''}`}
-              onClick={onOpenShare}
-              title={isSelf ? 'Interrompi condivisione' : 'Guarda lo schermo condiviso'}
-            >
-              <ScreenShare size={12} />
-            </button>
-          )}
-          {info.hand && <span className="badge hand">✋</span>}
-          {info.muted && (
-            <span className="badge">
-              <MicOff size={12} />
-            </span>
-          )}
         </div>
+        {/* I badge stanno fuori dal cerchio ritagliato, altrimenti il bordo li taglia */}
+        {sharing && (
+          <button
+            className={`badge share ${isSelf ? 'live' : ''}`}
+            onClick={onOpenShare}
+            title={isSelf ? 'Interrompi condivisione' : 'Guarda lo schermo condiviso'}
+          >
+            <ScreenShare size={12} />
+          </button>
+        )}
+        {info.hand && <span className="badge hand">✋</span>}
+        {info.muted && (
+          <span className="badge">
+            <MicOff size={12} />
+          </span>
+        )}
       </div>
       <span className="name">{isSelf ? 'Tu' : info.name}</span>
       {chat && (

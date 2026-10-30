@@ -6,7 +6,6 @@ export interface CampfireProps {
   people: PeerInfo[]
   selfId: string
   streamOf: (p: PeerInfo) => MediaStream | null | undefined
-  silenced: (p: PeerInfo) => boolean
   volumes: Record<string, number>
   muted: boolean
   camOff: boolean
@@ -30,7 +29,6 @@ export function Campfire(p: CampfireProps): React.JSX.Element {
             info={m}
             isSelf={m.id === p.selfId}
             stream={p.streamOf(m)}
-            silenced={p.silenced(m)}
             volume={p.volumes[m.id] ?? 1}
           />
         ))}
@@ -60,13 +58,11 @@ function Tile({
   info,
   isSelf,
   stream,
-  silenced,
   volume
 }: {
   info: PeerInfo
   isSelf: boolean
   stream: MediaStream | null | undefined
-  silenced: boolean
   volume: number
 }): React.JSX.Element {
   const video = useRef<HTMLVideoElement>(null)
@@ -79,7 +75,7 @@ function Tile({
   const showVideo = stream && stream.getVideoTracks().length > 0 && !info.camOff
   return (
     <div className="tile">
-      <video ref={video} autoPlay playsInline muted={isSelf || silenced} className={isSelf ? 'mirror' : ''} style={{ opacity: showVideo ? 1 : 0 }} />
+      <video ref={video} autoPlay playsInline muted={isSelf} className={isSelf ? 'mirror' : ''} style={{ opacity: showVideo ? 1 : 0 }} />
       {!showVideo && <span className="initial">{info.name.slice(0, 1).toUpperCase()}</span>}
       <span className="tile-name">
         {isSelf ? 'Tu' : info.name}

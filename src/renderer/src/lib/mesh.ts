@@ -13,8 +13,6 @@ export interface PeerInfo {
   /** quando ha iniziato a condividere: chi inizia dopo prende il posto di chi condivideva */
   sharingAt: number | null
   hand: boolean
-  /** "Stessa stanza": chi scrive lo stesso luogo è fisicamente nello stesso posto */
-  place: string | null
 }
 
 interface Signal {
@@ -103,7 +101,7 @@ export class MeshCall {
     await supabase.removeChannel(this.ch)
   }
 
-  updateMe(patch: Partial<Pick<PeerInfo, 'muted' | 'camOff' | 'sharing' | 'sharingAt' | 'hand' | 'place'>>): void {
+  updateMe(patch: Partial<Pick<PeerInfo, 'muted' | 'camOff' | 'sharing' | 'sharingAt' | 'hand'>>): void {
     this.me = { ...this.me, ...patch }
     this.ch.track(this.me)
   }
@@ -181,7 +179,7 @@ export class MeshCall {
     if (sender) {
       const params = sender.getParameters()
       if (params.encodings?.length) {
-        params.encodings[0].maxBitrate = this.bubblePx <= 110 ? 150_000 : 300_000
+        params.encodings[0].maxBitrate = this.bubblePx <= 110 ? 200_000 : 500_000
         params.encodings[0].scaleResolutionDownBy =
           this.bubblePx <= 110 ? 2 : this.bubblePx <= 150 ? 1.5 : 1
         sender.setParameters(params).catch(() => {})

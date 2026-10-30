@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 
 export interface Prefs {
   size: 'S' | 'M' | 'L'
+  /** diametro libero delle bolle (px): vince su `size` se presente */
+  px?: number
   compact: boolean
   confirmLeave: boolean
 }

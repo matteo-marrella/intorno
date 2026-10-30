@@ -7,10 +7,12 @@ import { createRoot } from 'react-dom/client'
 import Lobby from './views/Lobby'
 import Bubbles from './views/Bubbles'
 import Picker from './views/Picker'
+import { ShareFrame } from './views/ShareFrame'
 
 const isBubbles = location.hash.startsWith('#/bubbles')
 const isPicker = location.hash.startsWith('#/picker')
-if (isBubbles || isPicker) document.body.classList.add('transparent')
+const isFrame = location.hash.startsWith('#/frame')
+if (isBubbles || isPicker || isFrame) document.body.classList.add('transparent')
 
 /** Se una vista va in errore non resta una finestra vuota: messaggio e via d'uscita. */
 class Boundary extends Component<{ children: ReactNode }, { error: string | null }> {
@@ -33,5 +35,5 @@ class Boundary extends Component<{ children: ReactNode }, { error: string | null
 
 // Niente StrictMode: il doppio mount aprirebbe due volte la chiamata WebRTC.
 createRoot(document.getElementById('root')!).render(
-  <Boundary>{isBubbles ? <Bubbles /> : isPicker ? <Picker /> : <Lobby />}</Boundary>
+  <Boundary>{isBubbles ? <Bubbles /> : isPicker ? <Picker /> : isFrame ? <ShareFrame /> : <Lobby />}</Boundary>
 )

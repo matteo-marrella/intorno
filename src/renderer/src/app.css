@@ -247,6 +247,7 @@ code {
   transition: background 0.08s, box-shadow 0.08s;
 }
 .bubble {
+  --zoom: 1.3; /* l'inquadratura inviata è larga: le bolle zoomano un po', Campfire no */
   position: relative;
   width: var(--bubble);
   height: var(--bubble);
@@ -260,10 +261,11 @@ code {
   height: 100%;
   object-fit: cover;
   display: block;
+  transform: scale(var(--zoom));
   transition: opacity 0.2s;
 }
 .bubble video.mirror {
-  transform: scaleX(-1);
+  transform: scaleX(-1) scale(var(--zoom));
 }
 .initial {
   position: absolute;
@@ -329,7 +331,7 @@ code {
 }
 .dock {
   --from: -14px; /* la barra scende dalle bolle verso il basso */
-  height: 104px;
+  height: 116px;
   margin-top: 8px;
   display: flex;
   align-items: center;
@@ -1157,4 +1159,137 @@ code {
 }
 .update .btn {
   height: 30px;
+}
+
+/* Cornice di condivisione: linea rossa sottile con alone morbido, come un LED */
+body.transparent:has(.led) {
+  overflow: hidden;
+}
+.led {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 2px rgba(255, 64, 80, 0.95),
+    inset 0 0 8px 1px rgba(255, 40, 64, 0.75),
+    inset 0 0 28px 3px rgba(255, 30, 56, 0.3);
+  animation: led 2.6s ease-in-out infinite;
+}
+@keyframes led {
+  50% {
+    box-shadow:
+      inset 0 0 0 2px rgba(255, 64, 80, 0.8),
+      inset 0 0 12px 2px rgba(255, 40, 64, 0.6),
+      inset 0 0 42px 4px rgba(255, 30, 56, 0.22);
+  }
+}
+
+/* Barra: tre azioni grandi, il resto piccolo */
+.bar.pro {
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px 8px;
+  border-radius: 26px;
+}
+.bar-main {
+  display: flex;
+  gap: 6px;
+}
+.ctl.big {
+  width: 44px;
+  height: 44px;
+}
+.bar-sub {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.ctl.sm {
+  width: 30px;
+  height: 30px;
+  color: var(--ink-soft);
+}
+.ctl.sm:hover,
+.ctl.sm.on {
+  color: inherit;
+}
+.ctl.sm.on {
+  color: var(--accent-ink);
+}
+.ctl.sm.leave {
+  color: var(--danger);
+}
+.bar-sub .sep {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+  margin: 0 4px;
+}
+.ctl {
+  transition:
+    background 0.18s ease,
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    color 0.18s;
+}
+.ctl:active {
+  transform: scale(0.92);
+}
+.field.mini.wide {
+  width: 100%;
+}
+.fx-pop {
+  animation: card-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Maniglia per ridimensionare le bolle: compare quando ci passi vicino */
+.strip {
+  position: relative;
+}
+.grip {
+  position: absolute;
+  right: -2px;
+  bottom: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid rgba(0, 0, 0, 0.35);
+  cursor: nwse-resize;
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity 0.2s ease,
+    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.strip:hover .grip {
+  opacity: 0.9;
+  transform: none;
+}
+.dragging .grip {
+  opacity: 0;
+}
+
+/* Badge sul bordo del cerchio, mai tagliati */
+.ring {
+  position: relative;
+}
+.ring > .badge {
+  right: 4%;
+  bottom: 4%;
+}
+.ring > .badge.share {
+  left: 4%;
+  right: auto;
+}
+.ring > .badge.hand {
+  top: 0;
+  right: 0;
+  bottom: auto;
+  left: auto;
+  width: 30px;
+  height: 30px;
+  font-size: 18px;
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-soft);
 }

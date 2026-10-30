@@ -10,9 +10,11 @@ import {
   desktopCapturer,
   Tray,
   Menu,
-  nativeImage
+  nativeImage,
+  type Rectangle
 } from 'electron'
 import { join } from 'path'
+import { execFile, spawn, type ChildProcess } from 'child_process'
 import { readFileSync, writeFileSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
@@ -182,6 +184,8 @@ function openBubbles(room: { id: string; name: string }): void {
     if (bubbles === win) {
       bubbles = null
       currentRoom = null
+      docked = null
+      stopShareFrame()
     }
     lobby?.webContents.send('call:ended')
     refreshTray()
@@ -309,6 +313,162 @@ async function checkMacUpdate(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Durante una condivisione le bolle vanno in alto a destra (e tornano dopo); chi condivide vede una
+// cornice rossa sottile, a LED, attorno allo schermo o alla finestra condivisa.
+// ---------------------------------------------------------------------------------------------
+let docked: { x: number; y: number } | null = null // posizione "normale" prima dello spostamento
+let userMovedWhileDocked = false
+let anim: ReturnType<typeof setInterval> | null = null
+
+function animateTo(x: number, y: number, ms = 420): void {
+  if (!bubbles) return
+  if (anim) clearInterval(anim)
+  const from = bubbles.getBounds()
+  const t0 = Date.now()
+  anim = setInterval(() => {
+    if (!bubbles) return void (anim && clearInterval(anim))
+    const t = Math.min(1, (Date.now() - t0) / ms)
+    const e = 1 - Math.pow(1 - t, 3)
+    const b = bubbles.getBounds()
+    bubbles.setBounds({
+      ...b,
+      x: Math.round(from.x + (x - from.x) * e),
+      y: Math.round(from.y + (y - from.y) * e)
+    })
+    if (t >= 1) {
+      if (anim) clearInterval(anim)
+      anim = null
+      applyLayout()
+    }
+  }, 16)
+}
+
+function dockBubbles(on: boolean): void {
+  if (!bubbles || !geo) return
+  const b = bubbles.getBounds()
+  const wa = screen.getDisplayMatching(b).workArea
+  if (on && !docked) {
+    docked = { x: b.x, y: flip ? b.y + RESERVED : b.y }
+    userMovedWhileDocked = false
+    let y = b.y
+    if (flip) {
+      // La barra deve stare sotto le bolle quando sono in alto: si toglie il ribaltamento prima di salire
+      flip = false
+      y = b.y + RESERVED
+      geo = { ...geo, sy: geo.sy - RESERVED }
+      bubbles.setBounds({ ...b, y })
+      lastLayout = { flip: false, dx: lastLayout.dx }
+      bubbles.webContents.send('bubbles:layout', lastLayout)
+    }
+    animateTo(wa.x + wa.width - geo.sx - geo.sw - 16, wa.y + 10 - geo.sy + 6)
+  } else if (!on && docked) {
+    const back = docked
+    docked = null
+    if (!userMovedWhileDocked) animateTo(back.x, back.y)
+  }
+}
+
+let frameWin: BrowserWindow | null = null
+let frameTracker: ChildProcess | ReturnType<typeof setInterval> | null = null
+let lastChosen: { id: string; displayId?: string } | null = null
+
+function setFrame(b: Rectangle, rounded: boolean): void {
+  if (!frameWin) {
+    frameWin = new BrowserWindow({
+      ...b,
+      transparent: true,
+      frame: false,
+      hasShadow: false,
+      resizable: false,
+      focusable: false,
+      skipTaskbar: true,
+      show: false,
+      enableLargerThanScreen: true, // sul Mac altrimenti la cornice non copre la barra dei menu
+      backgroundColor: '#00000000',
+      webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false }
+    })
+    frameWin.setIgnoreMouseEvents(true)
+    frameWin.setContentProtection(true) // la cornice non compare nello schermo che vedono gli altri
+    frameWin.setAlwaysOnTop(true, 'screen-saver')
+    frameWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    frameWin.once('ready-to-show', () => frameWin?.showInactive())
+    load(frameWin, `/frame?r=${rounded ? 10 : 0}`)
+  } else {
+    frameWin.setBounds(b)
+    if (!frameWin.isVisible()) frameWin.showInactive()
+  }
+}
+
+function stopShareFrame(): void {
+  if (frameTracker) {
+    if (typeof (frameTracker as ChildProcess).kill === 'function') (frameTracker as ChildProcess).kill()
+    else clearInterval(frameTracker as ReturnType<typeof setInterval>)
+    frameTracker = null
+  }
+  frameWin?.destroy()
+  frameWin = null
+}
+
+function startShareFrame(): void {
+  stopShareFrame()
+  const sel = lastChosen
+  if (!sel) return
+  if (sel.id.startsWith('screen:')) {
+    const d = screen.getAllDisplays().find((x) => String(x.id) === sel.displayId) ?? screen.getPrimaryDisplay()
+    setFrame(d.bounds, false)
+    return
+  }
+  // Finestra: se ne segue la posizione (sul Mac dall'id CGWindowID, su Windows dall'HWND)
+  const wid = Number(sel.id.split(':')[1])
+  if (!wid) return
+  if (process.platform === 'darwin') {
+    const script =
+      "ObjC.import('CoreGraphics');function run(a){const l=ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionIncludingWindow,Number(a[0]))));if(!l||!l.length)return '';const b=l[0].kCGWindowBounds;return JSON.stringify([b.X,b.Y,b.Width,b.Height]);}"
+    let busy = false
+    frameTracker = setInterval(() => {
+      if (busy) return
+      busy = true
+      execFile('osascript', ['-l', 'JavaScript', '-e', script, String(wid)], (err, out) => {
+        busy = false
+        const txt = (out ?? '').trim()
+        if (err || !txt) return void frameWin?.hide()
+        const [x, y, w, h] = JSON.parse(txt) as number[]
+        if (w < 40 || h < 40) return void frameWin?.hide()
+        setFrame({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) }, true)
+      })
+    }, 450)
+  } else if (process.platform === 'win32') {
+    const ps = `Add-Type -TypeDefinition @'
+using System;using System.Runtime.InteropServices;
+public class W{[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out RECT r);
+[DllImport("user32.dll")]public static extern bool IsIconic(IntPtr h);
+[StructLayout(LayoutKind.Sequential)]public struct RECT{public int L,T,R,B;}}
+'@
+$h=[IntPtr]${wid}
+while($true){$r=New-Object 'W+RECT'
+if([W]::GetWindowRect($h,[ref]$r) -and -not [W]::IsIconic($h)){Write-Output "$($r.L),$($r.T),$($r.R-$r.L),$($r.B-$r.T)"}else{Write-Output 'none'}
+Start-Sleep -Milliseconds 400}`
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], {
+      windowsHide: true
+    })
+    frameTracker = child
+    let buf = ''
+    child.stdout.on('data', (d: Buffer) => {
+      buf += d.toString()
+      const lines = buf.split(/\r?\n/)
+      buf = lines.pop() ?? ''
+      const last = lines.filter(Boolean).pop()
+      if (!last) return
+      if (last === 'none') return void frameWin?.hide()
+      const [x, y, w, h] = last.split(',').map(Number)
+      if (!(w > 40 && h > 40)) return void frameWin?.hide()
+      const dip = screen.screenToDipRect(null, { x, y, width: w, height: h })
+      setFrame(dip, true)
+    })
+  }
+}
+
 let drag: { sx: number; sy: number; x: number; y: number } | null = null
 
 // Geometria delle bolle dentro la finestra (la manda il renderer). La finestra ha sempre uno spazio
@@ -321,7 +481,7 @@ interface Geo {
   barW: number
   flip: boolean // layout con cui il renderer ha misurato: scarta le misure vecchie
 }
-const RESERVED = 302 // dock 104 + margine 8 + riquadri 190 (in sync con app.css)
+const RESERVED = 314 // dock 116 + margine 8 + riquadri 190 (in sync con app.css e Bubbles.tsx)
 let geo: Geo | null = null
 let flip = false
 let lastLayout = { flip: false, dx: 0 }
@@ -452,10 +612,22 @@ app.whenReady().then(() => {
   ipcMain.on('share:choose', (_e, id: string) => {
     console.log('[share] scelta', id)
     pendingShareId = id
+    lastChosen = { id }
+    // Serve per sapere su quale schermo disegnare la cornice
+    desktopCapturer
+      .getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
+      .then((srcs) => {
+        const src = srcs.find((x) => x.id === id)
+        if (lastChosen?.id === id) lastChosen.displayId = src?.display_id
+      })
+      .catch(() => {})
     picker?.close()
     bubbles?.webContents.send('share:chosen')
   })
   ipcMain.on('share:cancel', () => picker?.close())
+  ipcMain.on('share:started', () => startShareFrame())
+  ipcMain.on('share:stopped', () => stopShareFrame())
+  ipcMain.on('bubbles:dock', (_e, on: boolean) => dockBubbles(on))
 
   ipcMain.handle('call:current', () => currentRoom)
   ipcMain.on('call:join', (_e, room: { id: string; name: string }) => openBubbles(room))
@@ -484,6 +656,7 @@ app.whenReady().then(() => {
   })
   ipcMain.on('bubbles:drag-start', (_e, sx: number, sy: number) => {
     if (!bubbles) return
+    if (anim) (clearInterval(anim), (anim = null))
     const b = bubbles.getBounds()
     drag = { sx, sy, x: b.x, y: b.y }
   })
@@ -495,6 +668,7 @@ app.whenReady().then(() => {
     applyLayout()
   })
   ipcMain.on('bubbles:drag-end', () => {
+    if (docked) userMovedWhileDocked = true // l'ha spostato lui: non lo riporto indietro da solo
     if (bubbles && drag) {
       const { x, y } = bubbles.getBounds()
       // Salvo la posizione "normale" (barra sotto): se è ribaltata la finestra sta più in alto
