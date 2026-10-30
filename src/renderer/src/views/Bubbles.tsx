@@ -27,7 +27,7 @@ import { useMe } from '../lib/session'
 import { BUBBLE_PX, usePrefs } from '../lib/prefs'
 import { MeshCall, type PeerInfo } from '../lib/mesh'
 import { blip, watchLevel } from '../lib/audio'
-import { VideoPipeline, type VideoFilter } from '../lib/pipeline'
+import { VideoPipeline, type Framing, type VideoFilter } from '../lib/pipeline'
 import { VoiceIsolator } from '../lib/voice'
 import { useChildWindow } from '../lib/childWindow'
 import { Campfire } from './Campfire'
@@ -97,6 +97,7 @@ export default function Bubbles(): React.JSX.Element {
   const [panel, setPanel] = useState<Panel>(null)
   const [filter, setFilter] = useState<VideoFilter>('bw')
   const pipelineRef = useRef<VideoPipeline | null>(null)
+  const framings = useRef<Record<string, Framing>>({}) // inquadratura del viso di ciascuno
   const stripRef = useRef<HTMLDivElement>(null)
   const downAt = useRef<{ x: number; y: number } | null>(null)
   const [layout, setLayout] = useState({ flip: false, dx: 0 }) // deciso dal processo principale
@@ -181,6 +182,7 @@ export default function Bubbles(): React.JSX.Element {
               const { [id]: _drop, ...rest } = c
               return rest
             })
+            delete framings.current[id]
           },
           onJoin: () => blip('join'),
           onLeave: () => blip('leave'),
@@ -191,10 +193,12 @@ export default function Bubbles(): React.JSX.Element {
               const { [from]: _drop, ...rest } = c
               return rest
             }),
-          onKick: () => window.api.call.leave()
+          onKick: () => window.api.call.leave(),
+          onFraming: (id, f) => (framings.current[id] = f)
         }
       )
       call.current = mesh
+      if (pipeline) pipeline.onFraming = (f) => mesh?.sendFraming(f)
       mesh.setBubbleSize(px)
       try {
         await mesh.join()
@@ -597,6 +601,7 @@ export default function Bubbles(): React.JSX.Element {
             volume={volumes[p.id] ?? 1}
             reactions={floating.filter((f) => f.from === p.id)}
             chat={chats[p.id]}
+            getFraming={() => (p.id === selfId ? pipelineRef.current?.framing : framings.current[p.id])}
             onDismissChat={() => dismissChat(p.id)}
             onContext={() => setMenuFor(p.id)}
           />
@@ -651,13 +656,10 @@ export default function Bubbles(): React.JSX.Element {
             ) : (
               <div className="bar pro" data-hit onMouseEnter={enter} onMouseLeave={leave}>
                 <span className="bar-title">{roomName}</span>
-                {/* Le funzioni principali: tutte uguali e grandi. Filtri e Campfire stanno qui in alto. */}
+                {/* Le funzioni principali, grandi: microfono, camera, schermo e il cambio di vista (bolle ⇄ Campfire) */}
                 <div
                   className="bar-main"
-                  onMouseOver={(e) => {
-                    const onFx = !!(e.target as HTMLElement).closest('[data-fx]')
-                    setPanel((p) => (onFx ? 'fx' : p === 'react' || p === 'fx' ? null : p))
-                  }}
+                  onMouseEnter={() => setPanel((p) => (p === 'react' || p === 'fx' ? null : p))}
                 >
                   <button className={`ctl big ${muted ? 'off' : ''}`} onClick={toggleMute} title="Microfono (⌘⇧M)">
                     {muted ? <MicOff size={22} /> : <Mic size={22} />}
@@ -673,14 +675,6 @@ export default function Bubbles(): React.JSX.Element {
                     {myShare ? <ScreenShareOff size={22} /> : <ScreenShare size={22} />}
                   </button>
                   <button
-                    data-fx
-                    className={`ctl big ${panel === 'fx' || filter !== 'none' ? 'on' : ''}`}
-                    onClick={() => setPanel((p) => (p === 'fx' ? null : 'fx'))}
-                    title="Effetti e filtri"
-                  >
-                    <Sparkles size={22} />
-                  </button>
-                  <button
                     className={`ctl big ${campfire ? 'on' : ''}`}
                     onClick={() => setCampfire((c) => !c)}
                     title={campfire ? 'Torna alle bolle' : 'Vista Campfire'}
@@ -688,8 +682,16 @@ export default function Bubbles(): React.JSX.Element {
                     <LayoutGrid size={22} />
                   </button>
                 </div>
-                {/* Il resto: piccolo. Le reazioni si aprono passandoci sopra */}
+                {/* Il resto: piccolo. Effetti e reazioni si aprono passandoci sopra */}
                 <div className="bar-sub">
+                  <button
+                    className={`ctl sm ${panel === 'fx' || filter !== 'none' ? 'on' : ''}`}
+                    onMouseEnter={() => setPanel('fx')}
+                    onClick={() => setPanel((p) => (p === 'fx' ? null : 'fx'))}
+                    title="Effetti e filtri"
+                  >
+                    <Sparkles size={16} />
+                  </button>
                   <button
                     className={`ctl sm ${panel === 'react' ? 'on' : ''}`}
                     onMouseEnter={() => setPanel('react')}
@@ -700,7 +702,7 @@ export default function Bubbles(): React.JSX.Element {
                   </button>
                   <button
                     className={`ctl sm ${panel === 'chat' ? 'on' : ''}`}
-                    onMouseEnter={() => setPanel((p) => (p === 'react' ? null : p))}
+                    onMouseEnter={() => setPanel((p) => (p === 'react' || p === 'fx' ? null : p))}
                     onClick={() => setPanel((p) => (p === 'chat' ? null : 'chat'))}
                     title="Chat"
                   >
@@ -708,7 +710,7 @@ export default function Bubbles(): React.JSX.Element {
                   </button>
                   <button
                     className={`ctl sm ${panel === 'more' ? 'on' : ''}`}
-                    onMouseEnter={() => setPanel((p) => (p === 'react' ? null : p))}
+                    onMouseEnter={() => setPanel((p) => (p === 'react' || p === 'fx' ? null : p))}
                     onClick={() => setPanel((p) => (p === 'more' ? null : 'more'))}
                     title="Altro"
                   >
@@ -833,6 +835,7 @@ function Bubble({
   sharing,
   onOpenShare,
   chat,
+  getFraming,
   onDismissChat,
   onContext
 }: {
@@ -844,15 +847,53 @@ function Bubble({
   sharing: boolean
   onOpenShare?: () => void
   chat?: ChatMsg
+  getFraming: () => Framing | undefined
   onDismissChat: () => void
   onContext: () => void
 }): React.JSX.Element {
   const video = useRef<HTMLVideoElement>(null)
   const ring = useRef<HTMLDivElement>(null)
+  const box = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (video.current) video.current.srcObject = stream ?? null
   }, [stream])
+
+  // Zoom sul viso: solo qui nella bolla. Si ritaglia il quadrato attorno al viso, con movimento morbido.
+  useEffect(() => {
+    let raf = 0
+    let last = performance.now()
+    const cur = { cx: 0.5, cy: 0.5, s: 1, init: false }
+    const loop = (): void => {
+      raf = requestAnimationFrame(loop)
+      const v = video.current
+      const b = box.current
+      if (!v || !b || !v.videoWidth) return
+      const t = getFraming() ?? { cx: 0.5, cy: 0.5, s: 1 }
+      const now = performance.now()
+      const k = 1 - Math.exp(-Math.min(0.1, (now - last) / 1000) / 0.25)
+      last = now
+      if (!cur.init) Object.assign(cur, t, { init: true })
+      else {
+        cur.cx += (t.cx - cur.cx) * k
+        cur.cy += (t.cy - cur.cy) * k
+        cur.s += (t.s - cur.s) * k
+      }
+      const vw = v.videoWidth
+      const vh = v.videoHeight
+      const side = Math.min(cur.s * vh, vw, vh)
+      const cx = Math.min(Math.max(cur.cx * vw, side / 2), vw - side / 2)
+      const cy = Math.min(Math.max(cur.cy * vh, side / 2), vh - side / 2)
+      const B = b.clientWidth
+      const sc = B / side
+      v.style.width = `${vw}px`
+      v.style.height = `${vh}px`
+      v.style.transform = `translate(${B / 2 - cx * sc}px, ${B / 2 - cy * sc}px) scale(${sc})`
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   useEffect(() => {
     if (video.current) video.current.volume = volume
   }, [volume])
@@ -870,15 +911,10 @@ function Bubble({
   return (
     <div className="bubble-wrap" onContextMenu={(e) => (e.preventDefault(), onContext())}>
       <div ref={ring} className="ring">
-        <div className="bubble">
-          <video
-            ref={video}
-            autoPlay
-            playsInline
-            muted={isSelf}
-            className={isSelf ? 'mirror' : ''}
-            style={{ opacity: showVideo ? 1 : 0 }}
-          />
+        <div className="bubble" ref={box}>
+          <div className={`vid ${isSelf ? 'mirror' : ''}`}>
+            <video ref={video} autoPlay playsInline muted={isSelf} style={{ opacity: showVideo ? 1 : 0 }} />
+          </div>
           {!showVideo && <span className="initial">{info.name.slice(0, 1).toUpperCase()}</span>}
         </div>
         {/* I badge stanno fuori dal cerchio ritagliato, altrimenti il bordo li taglia */}

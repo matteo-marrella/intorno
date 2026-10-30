@@ -1,5 +1,6 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './supabase'
+import type { Framing } from './pipeline'
 
 export interface PeerInfo {
   /** identifica la sessione (utente + istanza): la stessa persona può essere su due computer */
@@ -24,6 +25,7 @@ interface Signal {
 
 interface Peer {
   pc: RTCPeerConnection
+  dc: RTCDataChannel
   createdAt: number
   failTimer?: ReturnType<typeof setTimeout>
   polite: boolean
@@ -42,6 +44,7 @@ export interface CallEvents {
   onChat(msg: { from: string; name: string; body: string; at: number }): void
   onChatClear(from: string): void
   onKick(by: string): void
+  onFraming(id: string, f: Framing): void
 }
 
 /**
@@ -52,7 +55,6 @@ export class MeshCall {
   private ch!: RealtimeChannel
   private peers = new Map<string, Peer>()
   private known = new Map<string, PeerInfo>()
-  private bubblePx = 132
   private share: MediaStream | null = null
   private shareSenders = new Map<string, RTCRtpSender[]>()
   private onOnline = (): void => this.peers.forEach((p) => p.pc.restartIce())
@@ -124,9 +126,16 @@ export class MeshCall {
     this.ch.send({ type: 'broadcast', event: 'kick', payload: { to, by: this.me.name } })
   }
 
+  /** Dice agli altri dove sta il mio viso nell'immagine: ogni bolla fa lo zoom da sola. */
+  sendFraming(f: Framing): void {
+    const msg = JSON.stringify(f)
+    this.peers.forEach((p) => {
+      if (p.dc.readyState === 'open') p.dc.send(msg)
+    })
+  }
+
   /** Bolle piccole = video a bassa risoluzione/bitrate. */
-  setBubbleSize(px: number): void {
-    this.bubblePx = px
+  setBubbleSize(_px: number): void {
     this.peers.forEach((p) => this.tune(p.pc))
   }
 
@@ -179,9 +188,9 @@ export class MeshCall {
     if (sender) {
       const params = sender.getParameters()
       if (params.encodings?.length) {
-        params.encodings[0].maxBitrate = this.bubblePx <= 110 ? 200_000 : 500_000
-        params.encodings[0].scaleResolutionDownBy =
-          this.bubblePx <= 110 ? 2 : this.bubblePx <= 150 ? 1.5 : 1
+        // Camera intera (Campfire la mostra grande, le bolle ne ritagliano il viso): qualità uguale per tutti
+        params.encodings[0].maxBitrate = 650_000
+        params.encodings[0].scaleResolutionDownBy = 1
         sender.setParameters(params).catch(() => {})
       }
     }
@@ -234,7 +243,16 @@ export class MeshCall {
 
   private createPeer(id: string): Peer {
     const pc = new RTCPeerConnection({ iceServers: this.ice })
-    const peer: Peer = { pc, createdAt: Date.now(), polite: this.me.id < id, makingOffer: false, ignoreOffer: false }
+    // Canale dati leggero (id fisso, senza negoziazione) per l'inquadratura del viso
+    const dc = pc.createDataChannel('framing', { negotiated: true, id: 1, ordered: false, maxRetransmits: 0 })
+    dc.onmessage = (e) => {
+      try {
+        this.ev.onFraming(id, JSON.parse(e.data))
+      } catch {
+        /* messaggio non valido */
+      }
+    }
+    const peer: Peer = { pc, dc, createdAt: Date.now(), polite: this.me.id < id, makingOffer: false, ignoreOffer: false }
     this.peers.set(id, peer)
 
     this.local.getTracks().forEach((t) => pc.addTrack(t, this.local))
