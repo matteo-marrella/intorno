@@ -297,19 +297,23 @@ const newer = (a: string, b: string): boolean => {
 }
 let macDownload: string | null = null
 /** Mac senza firma: niente installazione automatica, ma l'avviso e il link al .dmg sì. */
-async function checkMacUpdate(): Promise<void> {
+async function checkMacUpdate(): Promise<string | null> {
   try {
     const res = await fetch(`https://api.github.com/repos/${RELEASES.owner}/${RELEASES.repo}/releases/latest`)
-    if (!res.ok) return
+    if (!res.ok) return null
     const rel = (await res.json()) as {
       tag_name: string
       assets: { name: string; browser_download_url: string }[]
     }
     const version = rel.tag_name.replace(/^v/, '')
     macDownload = rel.assets.find((a) => a.name.endsWith('-mac.dmg'))?.browser_download_url ?? null
-    if (newer(version, app.getVersion())) lobby?.webContents.send('update:available', version)
+    if (newer(version, app.getVersion())) {
+      lobby?.webContents.send('update:available', version)
+      return version
+    }
+    return null
   } catch {
-    /* offline: riproverà */
+    return null /* offline: riproverà */
   }
 }
 
@@ -711,6 +715,20 @@ app.whenReady().then(() => {
     setTimeout(check, 8000)
     setInterval(check, 4 * 60 * 60 * 1000)
   }
+  ipcMain.handle('app:version', () => app.getVersion())
+  ipcMain.handle('update:check', async () => {
+    if (!app.isPackaged) return 'Versione di sviluppo: nessun controllo.'
+    try {
+      if (process.platform === 'win32') {
+        const r = await autoUpdater.checkForUpdates()
+        return r?.isUpdateAvailable ? `Nuova versione ${r.updateInfo.version}: la sto scaricando.` : 'Sei aggiornato.'
+      }
+      const v = await checkMacUpdate()
+      return v ? `Nuova versione ${v} disponibile.` : 'Sei aggiornato.'
+    } catch (e) {
+      return `Controllo non riuscito: ${(e as Error).message}`
+    }
+  })
   ipcMain.on('update:download', () => {
     if (macDownload) shell.openExternal(macDownload)
   })

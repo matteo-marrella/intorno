@@ -6,6 +6,9 @@ export interface Prefs {
   px?: number
   compact: boolean
   confirmLeave: boolean
+  /** microfono e uscita audio scelti (id del dispositivo); vuoto = predefinito */
+  micId?: string
+  speakerId?: string
 }
 const KEY = 'intorno.prefs'
 const DEFAULTS: Prefs = { size: 'M', compact: false, confirmLeave: true }

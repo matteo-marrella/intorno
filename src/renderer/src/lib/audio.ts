@@ -48,3 +48,8 @@ export function blip(kind: 'join' | 'leave'): void {
     o.stop(t0 + i * 0.09 + 0.25)
   })
 }
+
+/** Sceglie l'uscita audio anche per i suoni di entrata/uscita (id vuoto = predefinita). */
+export function setOutputDevice(id: string): void {
+  ;(audioCtx() as AudioContext & { setSinkId?: (id: string) => Promise<void> }).setSinkId?.(id).catch(() => {})
+}

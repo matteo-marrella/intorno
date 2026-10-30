@@ -26,7 +26,7 @@ import { iceServers, supabase } from '../lib/supabase'
 import { useMe } from '../lib/session'
 import { BUBBLE_PX, usePrefs } from '../lib/prefs'
 import { MeshCall, type PeerInfo } from '../lib/mesh'
-import { blip, watchLevel } from '../lib/audio'
+import { blip, setOutputDevice, watchLevel } from '../lib/audio'
 import { VideoPipeline, type Framing, type VideoFilter } from '../lib/pipeline'
 import { VoiceIsolator } from '../lib/voice'
 import { useChildWindow } from '../lib/childWindow'
@@ -89,6 +89,11 @@ export default function Bubbles(): React.JSX.Element {
   const [hand, setHand] = useState(false)
   const [isolation, setIsolation] = useState(true) // isolamento della voce
   const isoRef = useRef<VoiceIsolator | null>(null)
+  const rawAudio = useRef<MediaStream | null>(null) // microfono grezzo in uso
+  const [devices, setDevices] = useState<{ mics: MediaDeviceInfo[]; speakers: MediaDeviceInfo[] }>({
+    mics: [],
+    speakers: []
+  })
   const [hideSelf, setHideSelf] = useState(false)
   const [campfire, setCampfire] = useState(false)
   const [error, setError] = useState('')
@@ -123,7 +128,12 @@ export default function Bubbles(): React.JSX.Element {
     let pipeline: VideoPipeline | null = null
     let iso: VoiceIsolator | null = null
     ;(async () => {
-      const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      const audio = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        ...(prefs.micId ? { deviceId: { ideal: prefs.micId } } : {})
+      }
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio,
@@ -146,6 +156,7 @@ export default function Bubbles(): React.JSX.Element {
       if (camTrack) pipeline = pipelineRef.current = new VideoPipeline(camTrack)
       // Voce isolata (rete neurale in locale): via rumore di fondo e suoni del computer
       const mic = stream.getAudioTracks()[0]
+      rawAudio.current = new MediaStream(stream.getAudioTracks())
       if (mic) iso = isoRef.current = await VoiceIsolator.create(mic)
       if (cancelled) {
         iso?.stop()
@@ -211,8 +222,10 @@ export default function Bubbles(): React.JSX.Element {
       mesh?.leave()
       pipeline?.stop()
       pipelineRef.current = null
-      iso?.stop()
+      isoRef.current?.stop()
       isoRef.current = null
+      rawAudio.current?.getTracks().forEach((t) => t.stop())
+      rawAudio.current = null
       stream?.getTracks().forEach((t) => t.stop())
       call.current = null
     }
@@ -220,6 +233,51 @@ export default function Bubbles(): React.JSX.Element {
   }, [me?.id, me?.ready])
 
   useEffect(() => call.current?.setBubbleSize(px), [px])
+
+  // --- Dispositivi audio: microfono (ingresso) e uscita
+  useEffect(() => {
+    const refresh = (): void => {
+      navigator.mediaDevices.enumerateDevices().then((all) =>
+        setDevices({
+          mics: all.filter((d) => d.kind === 'audioinput'),
+          speakers: all.filter((d) => d.kind === 'audiooutput')
+        })
+      )
+    }
+    refresh()
+    navigator.mediaDevices.addEventListener('devicechange', refresh)
+    return () => navigator.mediaDevices.removeEventListener('devicechange', refresh)
+  }, [local])
+  useEffect(() => setOutputDevice(prefs.speakerId ?? ''), [prefs.speakerId])
+
+  const switchMic = async (id: string): Promise<void> => {
+    setPrefs({ micId: id || undefined })
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          ...(id ? { deviceId: { exact: id } } : {})
+        }
+      })
+      const mic = s.getAudioTracks()[0]
+      const iso = await VoiceIsolator.create(mic)
+      iso?.setEnabled(isolation)
+      const track = iso?.track ?? mic
+      track.enabled = !mutedRef.current
+      // Il nuovo microfono sostituisce il vecchio, che si spegne
+      isoRef.current?.stop()
+      rawAudio.current?.getTracks().forEach((t) => t.stop())
+      isoRef.current = iso
+      rawAudio.current = s
+      const next = new MediaStream([track, ...(local?.getVideoTracks() ?? [])])
+      call.current?.replaceAudio(track, next)
+      setLocal(next)
+    } catch (e) {
+      setNotice(`Microfono non disponibile (${(e as DOMException).name}).`)
+    }
+  }
 
   // --- Mic / camera / mano / luogo
   const toggleMute = useCallback(() => {
@@ -527,6 +585,7 @@ export default function Bubbles(): React.JSX.Element {
   const leave = (): void => {
     clearTimeout(hideTimer.current)
     hideTimer.current = setTimeout(() => {
+      if ((document.activeElement as HTMLElement | null)?.tagName === 'SELECT') return // tendina aperta
       setHover(false)
       setPanel(null)
       setMenuFor(null)
@@ -601,6 +660,7 @@ export default function Bubbles(): React.JSX.Element {
             volume={volumes[p.id] ?? 1}
             reactions={floating.filter((f) => f.from === p.id)}
             chat={chats[p.id]}
+            sinkId={prefs.speakerId}
             getFraming={() => (p.id === selfId ? pipelineRef.current?.framing : framings.current[p.id])}
             onDismissChat={() => dismissChat(p.id)}
             onContext={() => setMenuFor(p.id)}
@@ -758,7 +818,41 @@ export default function Bubbles(): React.JSX.Element {
               </div>
             )}
             {panel === 'more' && (
-              <div className="fx-pop" data-hit onMouseEnter={enter} onMouseLeave={leave}>
+              <div className="fx-pop more-pop" data-hit onMouseEnter={enter} onMouseLeave={leave}>
+                <label className="dev">
+                  <small>Microfono</small>
+                  <select
+                    className="field mini"
+                    value={prefs.micId ?? ''}
+                    onChange={(e) => switchMic(e.target.value).then(() => (e.target as HTMLElement).blur())}
+                  >
+                    <option value="">Predefinito</option>
+                    {devices.mics
+                      .filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications')
+                      .map((d) => (
+                        <option key={d.deviceId} value={d.deviceId}>
+                          {d.label || 'Microfono'}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label className="dev">
+                  <small>Uscita audio</small>
+                  <select
+                    className="field mini"
+                    value={prefs.speakerId ?? ''}
+                    onChange={(e) => (setPrefs({ speakerId: e.target.value || undefined }), e.target.blur())}
+                  >
+                    <option value="">Predefinita</option>
+                    {devices.speakers
+                      .filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications')
+                      .map((d) => (
+                        <option key={d.deviceId} value={d.deviceId}>
+                          {d.label || 'Altoparlante'}
+                        </option>
+                      ))}
+                  </select>
+                </label>
                 <div className="chips">
                   <button
                     className={isolation ? 'sel' : ''}
@@ -811,6 +905,7 @@ export default function Bubbles(): React.JSX.Element {
             selfId={selfId}
             streamOf={camStream}
             volumes={volumes}
+            sinkId={prefs.speakerId}
             muted={muted}
             camOff={camOff}
             sharing={!!myShare}
@@ -835,6 +930,7 @@ function Bubble({
   sharing,
   onOpenShare,
   chat,
+  sinkId,
   getFraming,
   onDismissChat,
   onContext
@@ -847,6 +943,7 @@ function Bubble({
   sharing: boolean
   onOpenShare?: () => void
   chat?: ChatMsg
+  sinkId?: string
   getFraming: () => Framing | undefined
   onDismissChat: () => void
   onContext: () => void
@@ -897,6 +994,9 @@ function Bubble({
   useEffect(() => {
     if (video.current) video.current.volume = volume
   }, [volume])
+  useEffect(() => {
+    ;(video.current as (HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> }) | null)?.setSinkId?.(sinkId ?? '')?.catch(() => {})
+  }, [sinkId])
 
   // Anello della voce
   useEffect(() => {

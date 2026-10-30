@@ -66,6 +66,8 @@ const api = {
     onReady: (cb: (version: string) => void) => on<string>('update:ready', cb),
     onAvailable: (cb: (version: string) => void) => on<string>('update:available', cb),
     install: (): void => ipcRenderer.send('update:install'),
+    check: (): Promise<string> => ipcRenderer.invoke('update:check'),
+    version: (): Promise<string> => ipcRenderer.invoke('app:version'),
     download: (): void => ipcRenderer.send('update:download')
   },
   auth: {

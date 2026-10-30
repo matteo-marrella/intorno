@@ -126,6 +126,17 @@ export class MeshCall {
     this.ch.send({ type: 'broadcast', event: 'kick', payload: { to, by: this.me.name } })
   }
 
+  /** Cambio microfono: la nuova traccia sostituisce la vecchia verso tutti, senza rinegoziare. */
+  replaceAudio(track: MediaStreamTrack, local: MediaStream): void {
+    this.local = local
+    this.peers.forEach(({ pc }) =>
+      pc
+        .getSenders()
+        .find((s) => s.track?.kind === 'audio')
+        ?.replaceTrack(track)
+    )
+  }
+
   /** Dice agli altri dove sta il mio viso nell'immagine: ogni bolla fa lo zoom da sola. */
   sendFraming(f: Framing): void {
     const msg = JSON.stringify(f)

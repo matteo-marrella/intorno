@@ -7,6 +7,7 @@ export interface CampfireProps {
   selfId: string
   streamOf: (p: PeerInfo) => MediaStream | null | undefined
   volumes: Record<string, number>
+  sinkId?: string
   muted: boolean
   camOff: boolean
   sharing: boolean
@@ -30,6 +31,7 @@ export function Campfire(p: CampfireProps): React.JSX.Element {
             isSelf={m.id === p.selfId}
             stream={p.streamOf(m)}
             volume={p.volumes[m.id] ?? 1}
+            sinkId={p.sinkId}
           />
         ))}
       </div>
@@ -58,12 +60,14 @@ function Tile({
   info,
   isSelf,
   stream,
-  volume
+  volume,
+  sinkId
 }: {
   info: PeerInfo
   isSelf: boolean
   stream: MediaStream | null | undefined
   volume: number
+  sinkId?: string
 }): React.JSX.Element {
   const video = useRef<HTMLVideoElement>(null)
   useEffect(() => {
@@ -72,6 +76,9 @@ function Tile({
   useEffect(() => {
     if (video.current) video.current.volume = volume
   }, [volume])
+  useEffect(() => {
+    ;(video.current as (HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> }) | null)?.setSinkId?.(sinkId ?? '')?.catch(() => {})
+  }, [sinkId])
   const showVideo = stream && stream.getVideoTracks().length > 0 && !info.camOff
   return (
     <div className="tile">

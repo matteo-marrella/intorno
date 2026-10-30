@@ -170,6 +170,8 @@ function Rooms({ me }: { me: Me }): React.JSX.Element {
   const [prefs, setPrefs] = usePrefs()
   const [autoLaunch, setAutoLaunch] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [version, setVersion] = useState('')
+  const [updateMsg, setUpdateMsg] = useState('')
   const [mediaMsg, setMediaMsg] = useState('')
   const [roomsError, setRoomsError] = useState('')
   const [adding, setAdding] = useState(false)
@@ -213,6 +215,7 @@ function Rooms({ me }: { me: Me }): React.JSX.Element {
   useEffect(() => {
     window.api.call.current().then(setActive)
     window.api.settings.get().then((s) => setAutoLaunch(s.autoLaunch))
+    window.api.update.version().then(setVersion)
     const offs = [
       window.api.call.onStarted(setActive),
       window.api.call.onEnded(() => setActive(null))
@@ -319,6 +322,21 @@ function Rooms({ me }: { me: Me }): React.JSX.Element {
             Avvia con il computer
           </label>
           <p className="soft">Mute rapido: ⌘/Ctrl + Maiusc + M</p>
+          <div className="pwform">
+            <span>Versione {version}</span>
+            <div className="row">
+              <button
+                className="btn"
+                onClick={() => {
+                  setUpdateMsg('Controllo…')
+                  window.api.update.check().then(setUpdateMsg)
+                }}
+              >
+                Controlla aggiornamenti
+              </button>
+            </div>
+            {updateMsg && <small>{updateMsg}</small>}
+          </div>
           <ChangePassword />
         </section>
       )}
